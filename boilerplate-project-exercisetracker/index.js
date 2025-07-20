@@ -50,9 +50,16 @@ app.post('/api/users', async function(req, res) {
 })
 
 app.get('/api/users', async function(req, res) {
-  const response = await Person.find().select({ _id: 1, username: 1 });
-  res.json(response);
-})
+  const users = await Person.find({}, { username: 1 }).lean(); // ensures plain JS objects
+
+  // Explicitly map and sanitize
+  const cleanUsers = users.map(user => ({
+    _id: user._id.toString(),
+    username: user.username
+  }));
+
+  res.json(cleanUsers);
+});
 
 
 app.post('/api/users/:_id/exercises', async function(req, res) {
