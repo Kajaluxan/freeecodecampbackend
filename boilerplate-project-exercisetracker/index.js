@@ -1,17 +1,25 @@
-const express = require('express')
-const app = express()
-const cors = require('cors')
-const bodyParser = require('body-parser')
-const mongoose = require('mongoose')
-require('dotenv').config()
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const mongoose = require('mongoose');
+require('dotenv').config();
 
-mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-app.use(bodyParser.json())
-app.use(bodyParser.urlencoded({ extended: false }))
-app.use(cors())
-app.use(express.static('public'))
+const app = express();
 
-let personSchema = mongoose.Schema({
+// Middleware
+app.use(cors());
+app.use(express.static('public'));
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+
+// MongoDB connection
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+});
+
+// Schema
+const personSchema = new mongoose.Schema({
   username: {
     type: String,
     required: true
@@ -19,86 +27,130 @@ let personSchema = mongoose.Schema({
   exercises: {
     type: [
       {
-        description: {
-          type: String,
-          required: true
-        },
-        duration: {
-          type: Number,
-          required: true
-        },
-        date: {
-          type: String,
-        }
+        description: { type: String, required: true },
+        duration: { type: Number, required: true },
+        date: { type: String }
       }
     ],
     default: []
   }
-}
-)
-let Person = mongoose.model("Person", personSchema)
+});
+
+const Person = mongoose.model('Person', personSchema);
+
+// Home Page
 app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/views/index.html')
+  res.sendFile(__dirname + '/views/index.html');
 });
 
-
-app.post('/api/users', async function(req, res) {
+// ✅ Create New User
+app.post('/api/users', async (req, res) => {
   const { username } = req.body;
-  let person = Person({ username })
-  const response = await person.save()
-  res.json({ username, _id: response._id })
-})
-
-app.get('/api/users', async function(req, res) {
-  const users = await Person.find({}, { username: 1 }).lean(); // ensures plain JS objects
-
-  // Explicitly map and sanitize
-  const cleanUsers = users.map(user => ({
-    _id: user._id.toString(),
-    username: user.username
-  }));
-
-  res.json(cleanUsers);
+  try {
+    const user = new Person({ username });
+    const savedUser = await user.save();
+    res.json({ username: savedUser.username, _id: savedUser._id.toString() });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create user' });
+  }
 });
 
+// ✅ Get All Users
+app.get('/api/users', async function(req, res) {
+  try {
+    const users = await Person.find({ username: { $exists: true } }, '_id username').lean();
 
-app.post('/api/users/:_id/exercises', async function(req, res) {
+    const sanitized = users.map(user => ({
+      _id: user._id.toString(),
+      username: user.username
+    }));
+
+    res.json(sanitized);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// ✅ Add Exercise
+app.post('/api/users/:_id/exercises', async (req, res) => {
   const { _id } = req.params;
-  var { description, duration, date } = req.body;
-  duration = Number(duration);
-  if (!date) date = new Date().toDateString();
-  else date = new Date(date).toDateString();
-  const person = await Person.findById(_id);
-  person.exercises.push({ date, duration, description });
-  const response = await person.save();
-  const { username } = response;
-  res.json({ _id: _id, username: username, date: date, duration: duration, description: description });
-}
-)
+  let { description, duration, date } = req.body;
 
-app.get('/api/users/:_id/logs', async function(req, res) {
+  try {
+    const user = await Person.findById(_id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    if (!date) {
+      date = new Date().toDateString();
+    } else {
+      date = new Date(date).toDateString();
+    }
+
+    const exercise = {
+      description,
+      duration: parseInt(duration),
+      date
+    };
+
+    user.exercises.push(exercise);
+    await user.save();
+
+    res.json({
+      _id: user._id.toString(),
+      username: user.username,
+      description: exercise.description,
+      duration: exercise.duration,
+      date: exercise.date
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to add exercise' });
+  }
+});
+
+// ✅ Get User Logs
+app.get('/api/users/:_id/logs', async (req, res) => {
   const { _id } = req.params;
   const { from, to, limit } = req.query;
-  const person = await Person.findById(_id).lean();
-  var { username, exercises } = person;
-  const count = exercises.length;
-  if (from && to) {
-    exercises = exercises.filter((exercise) => {
-      const { date } = exercise;
-      console.log(new Date(date) <= new Date(to));
-      if (new Date(from) <= new Date(date) && new Date(date) <= new Date(to)) {
-        delete exercise._id;
-        return exercise;
-      }
-    })
-  };
-  if (limit) {
-    exercises = exercises.slice(0, limit);
-  };
-  res.json({ _id: _id, username: username, count: count, log: exercises });
-}
-)
 
+  try {
+    const user = await Person.findById(_id).lean();
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    let exercises = user.exercises;
+
+    if (from) {
+      const fromDate = new Date(from);
+      exercises = exercises.filter(e => new Date(e.date) >= fromDate);
+    }
+
+    if (to) {
+      const toDate = new Date(to);
+      exercises = exercises.filter(e => new Date(e.date) <= toDate);
+    }
+
+    if (limit) {
+      exercises = exercises.slice(0, parseInt(limit));
+    }
+
+    const log = exercises.map(e => ({
+      description: e.description,
+      duration: e.duration,
+      date: e.date
+    }));
+
+    res.json({
+      _id: user._id.toString(),
+      username: user.username,
+      count: log.length,
+      log
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to get logs' });
+  }
+});
+
+// Start server
 const listener = app.listen(process.env.PORT || 3000, () => {
-  console.log('Your app is listening on port ' + listener.address().port)
-})
+  console.log('Your app is listening on port ' + listener.address().port);
+});
